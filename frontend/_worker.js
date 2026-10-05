@@ -32,8 +32,8 @@ async function runAggregation(taskId, env) {
     const updateTaskState = async () => {
         taskState.logs = logs.join('\n');
         // Persist the task state to KV so it can be polled.
-        if (env.TVBOX_KV) {
-            await env.TVBOX_KV.put(taskId, JSON.stringify(taskState));
+        if (env.TVBox_KV) {
+            await env.TVBox_KV.put(taskId, JSON.stringify(taskState));
         }
     };
 
@@ -90,9 +90,9 @@ async function runAggregation(taskId, env) {
 
         // 3. Store the final result in KV.
         log('步骤 3/3: 正在将最终结果写入KV...');
-        if (!env.TVBOX_KV) throw new Error("配置错误: 未绑定 TVBOX_KV 命名空间。");
+        if (!env.TVBox_KV) throw new Error("配置错误: 未绑定 TVBox_KV 命名空间。");
 
-        await env.TVBOX_KV.put('latest_aggregated_result', JSON.stringify(aggregatedJson, null, 2));
+        await env.TVBox_KV.put('latest_aggregated_result', JSON.stringify(aggregatedJson, null, 2));
         log('写入成功！任务完成！');
 
         taskState.status = 'completed';
@@ -107,61 +107,64 @@ async function runAggregation(taskId, env) {
 }
 
 /**
- * Main entry point for all requests.
- * @param {object} context - The Cloudflare runtime context object.
+ * Pages advanced mode entry point (Module Worker syntax).
+ * _worker.js must export default { fetch }, NOT onRequest.
  */
-export async function onRequest(context) {
-    const { request, env, next } = context;
+export default {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     // Handle CORS preflight requests (OPTIONS method)
     if (request.method === 'OPTIONS') {
-        return new Response(null, {
-            headers: {
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-                'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-            }
-        });
+      return new Response(null, {
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        }
+      });
     }
 
     // --- API: Start Task ---
     if (url.pathname === '/api/start-task' && request.method === 'POST') {
-        const taskId = `task-${Date.now()}`;
-        context.waitUntil(runAggregation(taskId, env));
-        return jsonResponse({
-            message: '任务已启动，请稍后查询状态。',
-            taskId: taskId
-        });
+      const taskId = `task-${Date.now()}`;
+      ctx.waitUntil(runAggregation(taskId, env));
+      return jsonResponse({
+        message: '任务已启动，请稍后查询状态。',
+        taskId: taskId
+      });
     }
 
     // --- API: Get Task Status ---
     if (url.pathname === '/api/task-status') {
-        const taskId = url.searchParams.get('taskId');
-        if (!taskId) return jsonResponse({ error: '缺少 taskId' }, 400);
+      const taskId = url.searchParams.get('taskId');
+      if (!taskId) return jsonResponse({ error: '缺少 taskId' }, 400);
 
-        const taskStateJson = await env.TVBOX_KV.get(taskId);
-        if (!taskStateJson) return jsonResponse({ status: 'pending', logs: '正在初始化任务...' });
+      const taskStateJson = await env.TVBox_KV.get(taskId);
+      if (!taskStateJson) return jsonResponse({ status: 'pending', logs: '正在初始化任务...' });
 
-        // Use jsonResponse to ensure CORS headers are included
-        return jsonResponse(JSON.parse(taskStateJson));
+      // Use jsonResponse to ensure CORS headers are included
+      return jsonResponse(JSON.parse(taskStateJson));
     }
 
     // --- Dynamic Route: Get Subscription File ---
     if (url.pathname === '/subscribe.json') {
-        const latestResult = await env.TVBOX_KV.get('latest_aggregated_result');
-        if (!latestResult) {
-            return jsonResponse({ note: "尚未生成聚合数据，请先启动聚合任务。" }, 404);
+      const latestResult = await env.TVBox_KV.get('latest_aggregated_result');
+      if (!latestResult) {
+        return jsonResponse({ note: "尚未生成聚合数据，请先启动聚合任务。" }, 404);
+      }
+      // Manually create response but ensure CORS headers are present
+      return new Response(latestResult, {
+        headers: {
+          'Content-Type': 'application/json;charset=UTF-8',
+          'Access-Control-Allow-Origin': '*'
         }
-        // Manually create response but ensure CORS headers are present
-        return new Response(latestResult, {
-            headers: {
-                'Content-Type': 'application/json;charset=UTF-8',
-                'Access-Control-Allow-Origin': '*'
-            }
-        });
+      });
     }
 
-    // If no API route matches, serve the static assets.
-    return next();
-}
+
+
+    // Serve static assets for everything else.
+    return env.ASSETS.fetch(request);
+  }
+};
