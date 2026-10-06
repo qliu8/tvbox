@@ -107,8 +107,20 @@ async function runAggregation(taskId, env) {
 }
 
 /**
+ * Cron trigger entry point (Pages Cron Triggers).
+ * Cloudflare invokes this on the configured schedule; the aggregation
+ * result is written to KV by runAggregation, same as a manual run.
+ */
+async function scheduled(event, env, ctx) {
+    const taskId = `cron-${Date.now()}`;
+    // Await the work directly so the cron invocation stays alive until it finishes.
+    await runAggregation(taskId, env);
+}
+
+/**
  * Pages advanced mode entry point (Module Worker syntax).
  * _worker.js must export default { fetch }, NOT onRequest.
+ * The `scheduled` export is invoked by Pages Cron Triggers.
  */
 export default {
   async fetch(request, env, ctx) {
@@ -166,5 +178,8 @@ export default {
 
     // Serve static assets for everything else.
     return env.ASSETS.fetch(request);
-  }
+  },
+
+  // Pages Cron Triggers entry point (daily re-aggregation).
+  scheduled,
 };
